@@ -1,0 +1,585 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import './App.css';
+
+// Game States
+const GAME_STATES = {
+  MAIN_MENU: 'MAIN_MENU',
+  GAMEPLAY: 'GAMEPLAY',
+  GAME_OVER: 'GAME_OVER',
+  HIGHSCORES: 'HIGHSCORES',
+  SETTINGS: 'SETTINGS'
+};
+
+// Difficulty Levels
+const DIFFICULTY_LEVELS = {
+  EASY: { name: 'Easy', multiplier: 1, timeLimit: 120, range: 10 },
+  MEDIUM: { name: 'Medium', multiplier: 1.5, timeLimit: 90, range: 25 },
+  HARD: { name: 'Hard', multiplier: 2, timeLimit: 75, range: 50 },
+  EXPERT: { name: 'Expert', multiplier: 3, timeLimit: 60, range: 100 }
+};
+
+// Power-up Types
+const POWER_UPS = {
+  TIME_FREEZE: { name: 'Time Freeze', duration: 5000, color: '#4FC3F7' },
+  DOUBLE_POINTS: { name: 'Double Points', duration: 10000, color: '#FFD54F' },
+  SLOW_MOTION: { name: 'Slow Motion', duration: 8000, color: '#BA68C8' },
+  EXTRA_LIFE: { name: 'Extra Life', duration: 0, color: '#FF7043' }
+};
+
+// Generate a random math question based on difficulty
+const generateQuestion = (difficulty) => {
+  const level = DIFFICULTY_LEVELS[difficulty];
+  const operations = difficulty === 'EASY' ? ['+', '-'] : 
+                    difficulty === 'MEDIUM' ? ['+', '-', '×'] : ['+', '-', '×', '÷'];
+  
+  const operation = operations[Math.floor(Math.random() * operations.length)];
+  let num1, num2, answer;
+  
+  switch (operation) {
+    case '+':
+      num1 = Math.floor(Math.random() * level.range) + 1;
+      num2 = Math.floor(Math.random() * level.range) + 1;
+      answer = num1 + num2;
+      break;
+    case '-':
+      num1 = Math.floor(Math.random() * level.range) + 1;
+      num2 = Math.floor(Math.random() * num1) + 1;
+      answer = num1 - num2;
+      break;
+    case '×':
+      num1 = Math.floor(Math.random() * 12) + 1;
+      num2 = Math.floor(Math.random() * 12) + 1;
+      answer = num1 * num2;
+      break;
+    case '÷':
+      num2 = Math.floor(Math.random() * 12) + 1;
+      answer = Math.floor(Math.random() * 12) + 1;
+      num1 = num2 * answer;
+      break;
+    default:
+      num1 = 1; num2 = 1; answer = 2;
+  }
+  
+  return {
+    id: Date.now() + Math.random(),
+    num1,
+    num2,
+    operation,
+    answer,
+    y: -100,
+    speed: 1 + (difficulty === 'EXPERT' ? 1 : difficulty === 'HARD' ? 0.7 : difficulty === 'MEDIUM' ? 0.5 : 0.3),
+    answered: false
+  };
+};
+
+function App() {
+  // Game State
+  const [gameState, setGameState] = useState(GAME_STATES.MAIN_MENU);
+  const [difficulty, setDifficulty] = useState('MEDIUM');
+  const [score, setScore] = useState(0);
+  const [lives, setLives] = useState(3);
+  const [timeRemaining, setTimeRemaining] = useState(90);
+  const [streak, setStreak] = useState(0);
+  const [maxStreak, setMaxStreak] = useState(0);
+  
+  // Game Objects
+  const [questions, setQuestions] = useState([]);
+  const [powerUps, setPowerUps] = useState([]);
+  const [particles, setParticles] = useState([]);
+  
+  // Input and UI
+  const [currentInput, setCurrentInput] = useState('');
+  const [activePowerUps, setActivePowerUps] = useState({});
+  const [highScores, setHighScores] = useState([]);
+  const [showSettings, setShowSettings] = useState(false);
+  
+  // Animation and Effects
+  const [animationFrame, setAnimationFrame] = useState(0);
+  const gameLoopRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // Load high scores from localStorage
+  useEffect(() => {
+    const savedScores = localStorage.getItem('mathHeroHighScores');
+    if (savedScores) {
+      setHighScores(JSON.parse(savedScores));
+    }
+  }, []);
+
+  // Game Loop
+  const gameLoop = useCallback(() => {
+    if (gameState !== GAME_STATES.GAMEPLAY) return;
+    
+    setAnimationFrame(prev => prev + 1);
+    
+    // Update time (unless time freeze is active)
+    if (!activePowerUps.TIME_FREEZE) {
+      setTimeRemaining(prev => {
+        if (prev <= 0) {
+          setGameState(GAME_STATES.GAME_OVER);
+          return 0;
+        }
+        return prev - 1/60; // 60 FPS
+      });
+    }
+    
+    // Update power-up timers
+    setActivePowerUps(prev => {
+      const updated = { ...prev };
+      Object.keys(updated).forEach(key => {
+        updated[key] -= 1000/60;
+        if (updated[key] <= 0) {
+          delete updated[key];
+        }
+      });
+      return updated;
+    });
+    
+    // Update questions
+    setQuestions(prev => prev.map(q => ({
+      ...q,
+      y: q.y + q.speed * (activePowerUps.SLOW_MOTION ? 0.5 : 1)
+    })).filter(q => q.y < window.innerHeight + 100));
+    
+    // Update power-ups
+    setPowerUps(prev => prev.map(p => ({
+      ...p,
+      y: p.y + 2
+    })).filter(p => p.y < window.innerHeight + 50));
+    
+    // Update particles
+    setParticles(prev => prev.map(p => ({
+      ...p,
+      y: p.y - p.velocityY,
+      x: p.x + p.velocityX,
+      life: p.life - 1
+    })).filter(p => p.life > 0));
+    
+    // Spawn new questions
+    setQuestions(prev => {
+      if (prev.filter(q => !q.answered).length < 3) {
+        return [...prev, generateQuestion(difficulty)];
+      }
+      return prev;
+    });
+    
+    // Spawn power-ups occasionally
+    if (Math.random() < 0.001) {
+      const powerUpTypes = Object.keys(POWER_UPS);
+      const type = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)];
+      setPowerUps(prev => [...prev, {
+        id: Date.now(),
+        type,
+        x: Math.random() * (window.innerWidth - 100) + 50,
+        y: -50,
+        rotation: 0
+      }]);
+    }
+    
+  }, [gameState, difficulty, activePowerUps]);
+
+  // Start game loop
+  useEffect(() => {
+    if (gameState === GAME_STATES.GAMEPLAY) {
+      gameLoopRef.current = setInterval(gameLoop, 1000/60);
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    } else {
+      if (gameLoopRef.current) {
+        clearInterval(gameLoopRef.current);
+      }
+    }
+    
+    return () => {
+      if (gameLoopRef.current) {
+        clearInterval(gameLoopRef.current);
+      }
+    };
+  }, [gameState, gameLoop]);
+
+  // Initialize game
+  const startGame = () => {
+    const level = DIFFICULTY_LEVELS[difficulty];
+    setScore(0);
+    setLives(3);
+    setTimeRemaining(level.timeLimit);
+    setStreak(0);
+    setQuestions([]);
+    setPowerUps([]);
+    setParticles([]);
+    setCurrentInput('');
+    setActivePowerUps({});
+    setGameState(GAME_STATES.GAMEPLAY);
+  };
+
+  // Handle answer submission
+  const submitAnswer = () => {
+    const answer = parseInt(currentInput);
+    if (isNaN(answer)) return;
+    
+    const questionToAnswer = questions.find(q => 
+      !q.answered && q.y > 100 && q.y < window.innerHeight - 200
+    );
+    
+    if (questionToAnswer && questionToAnswer.answer === answer) {
+      // Correct answer
+      setQuestions(prev => prev.map(q => 
+        q.id === questionToAnswer.id ? { ...q, answered: true } : q
+      ));
+      
+      const points = Math.floor(10 * DIFFICULTY_LEVELS[difficulty].multiplier);
+      const bonusPoints = activePowerUps.DOUBLE_POINTS ? points : 0;
+      const streakBonus = streak >= 5 ? 5 : 0;
+      
+      setScore(prev => prev + points + bonusPoints + streakBonus);
+      setStreak(prev => {
+        const newStreak = prev + 1;
+        setMaxStreak(current => Math.max(current, newStreak));
+        return newStreak;
+      });
+      
+      // Create success particles
+      setParticles(prev => [...prev, ...Array.from({ length: 10 }, (_, i) => ({
+        id: Date.now() + i,
+        x: window.innerWidth / 2 + (Math.random() - 0.5) * 100,
+        y: window.innerHeight / 2,
+        velocityX: (Math.random() - 0.5) * 10,
+        velocityY: Math.random() * 10 + 5,
+        life: 60,
+        color: '#4CAF50'
+      }))]);
+      
+    } else {
+      // Wrong answer
+      setLives(prev => {
+        const newLives = prev - 1;
+        if (newLives <= 0) {
+          setGameState(GAME_STATES.GAME_OVER);
+        }
+        return newLives;
+      });
+      setStreak(0);
+      
+      // Create failure particles
+      setParticles(prev => [...prev, ...Array.from({ length: 8 }, (_, i) => ({
+        id: Date.now() + i,
+        x: window.innerWidth / 2 + (Math.random() - 0.5) * 100,
+        y: window.innerHeight / 2,
+        velocityX: (Math.random() - 0.5) * 8,
+        velocityY: Math.random() * 8 + 3,
+        life: 45,
+        color: '#F44336'
+      }))]);
+    }
+    
+    setCurrentInput('');
+  };
+
+  // Handle power-up collection
+  const collectPowerUp = (powerUp) => {
+    setPowerUps(prev => prev.filter(p => p.id !== powerUp.id));
+    
+    switch (powerUp.type) {
+      case 'TIME_FREEZE':
+        setActivePowerUps(prev => ({ ...prev, TIME_FREEZE: POWER_UPS.TIME_FREEZE.duration }));
+        break;
+      case 'DOUBLE_POINTS':
+        setActivePowerUps(prev => ({ ...prev, DOUBLE_POINTS: POWER_UPS.DOUBLE_POINTS.duration }));
+        break;
+      case 'SLOW_MOTION':
+        setActivePowerUps(prev => ({ ...prev, SLOW_MOTION: POWER_UPS.SLOW_MOTION.duration }));
+        break;
+      case 'EXTRA_LIFE':
+        setLives(prev => Math.min(prev + 1, 5));
+        break;
+      default:
+        break;
+    }
+  };
+
+  // Save high score
+  const saveHighScore = () => {
+    const newHighScores = [...highScores, score].sort((a, b) => b - a).slice(0, 10);
+    setHighScores(newHighScores);
+    localStorage.setItem('mathHeroHighScores', JSON.stringify(newHighScores));
+  };
+
+  // Game over effect
+  useEffect(() => {
+    if (gameState === GAME_STATES.GAME_OVER && score > 0) {
+      saveHighScore();
+    }
+  }, [gameState]);
+
+  // Keyboard handling
+  useEffect(() => {
+    const handleKeyPress = (e) => {
+      if (gameState === GAME_STATES.GAMEPLAY) {
+        if (e.key === 'Enter') {
+          submitAnswer();
+        } else if (e.key === 'Escape') {
+          setGameState(GAME_STATES.MAIN_MENU);
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [gameState, currentInput]);
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="App">
+      {/* Background */}
+      <div className="background">
+        <div className="stars"></div>
+      </div>
+
+      {/* Main Menu */}
+      {gameState === GAME_STATES.MAIN_MENU && (
+        <div className="menu-screen">
+          <div className="menu-content">
+            <h1 className="game-title">
+              <span className="title-math">MATH</span>
+              <span className="title-hero">HERO</span>
+            </h1>
+            <p className="game-subtitle">Transform Math Learning into an Epic Adventure!</p>
+            
+            <div className="menu-buttons">
+              <button className="menu-btn primary" onClick={startGame}>
+                🎮 START GAME
+              </button>
+              <button className="menu-btn" onClick={() => setGameState(GAME_STATES.HIGHSCORES)}>
+                🏆 HIGH SCORES
+              </button>
+              <button className="menu-btn" onClick={() => setShowSettings(true)}>
+                ⚙️ SETTINGS
+              </button>
+            </div>
+            
+            <div className="difficulty-selector">
+              <h3>Select Difficulty:</h3>
+              <div className="difficulty-buttons">
+                {Object.entries(DIFFICULTY_LEVELS).map(([key, level]) => (
+                  <button
+                    key={key}
+                    className={`difficulty-btn ${difficulty === key ? 'active' : ''}`}
+                    onClick={() => setDifficulty(key)}
+                  >
+                    {level.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Gameplay */}
+      {gameState === GAME_STATES.GAMEPLAY && (
+        <div className="game-screen">
+          {/* HUD */}
+          <div className="hud">
+            <div className="hud-left">
+              <div className="score">Score: {score}</div>
+              <div className="lives">Lives: {'❤️'.repeat(lives)}</div>
+              <div className="streak">Streak: {streak}</div>
+            </div>
+            <div className="hud-center">
+              <div className="time-container">
+                <div className="time-bar">
+                  <div 
+                    className="time-fill" 
+                    style={{ 
+                      width: `${(timeRemaining / DIFFICULTY_LEVELS[difficulty].timeLimit) * 100}%`,
+                      backgroundColor: timeRemaining < 20 ? '#f44336' : timeRemaining < 40 ? '#ff9800' : '#4caf50'
+                    }}
+                  ></div>
+                </div>
+                <div className="time-text">{formatTime(timeRemaining)}</div>
+              </div>
+            </div>
+            <div className="hud-right">
+              <div className="difficulty-display">{DIFFICULTY_LEVELS[difficulty].name}</div>
+            </div>
+          </div>
+
+          {/* Active Power-ups */}
+          {Object.keys(activePowerUps).length > 0 && (
+            <div className="active-powerups">
+              {Object.entries(activePowerUps).map(([type, timeLeft]) => (
+                <div key={type} className="powerup-indicator" style={{ color: POWER_UPS[type].color }}>
+                  {POWER_UPS[type].name}: {Math.ceil(timeLeft / 1000)}s
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Questions */}
+          <div className="questions-container">
+            {questions.map(question => (
+              <div
+                key={question.id}
+                className={`question ${question.answered ? 'answered' : ''}`}
+                style={{
+                  transform: `translateY(${question.y}px)`,
+                  left: '50%',
+                  marginLeft: '-100px'
+                }}
+              >
+                {question.num1} {question.operation} {question.num2} = ?
+              </div>
+            ))}
+          </div>
+
+          {/* Power-ups */}
+          <div className="powerups-container">
+            {powerUps.map(powerUp => (
+              <div
+                key={powerUp.id}
+                className="powerup"
+                style={{
+                  transform: `translate(${powerUp.x}px, ${powerUp.y}px) rotate(${animationFrame * 2}deg)`,
+                  backgroundColor: POWER_UPS[powerUp.type].color
+                }}
+                onClick={() => collectPowerUp(powerUp)}
+              >
+                ⭐
+              </div>
+            ))}
+          </div>
+
+          {/* Particles */}
+          <div className="particles-container">
+            {particles.map(particle => (
+              <div
+                key={particle.id}
+                className="particle"
+                style={{
+                  left: particle.x,
+                  top: particle.y,
+                  backgroundColor: particle.color,
+                  opacity: particle.life / 60
+                }}
+              ></div>
+            ))}
+          </div>
+
+          {/* Input Area */}
+          <div className="input-area">
+            <div className="input-container">
+              <label>Your Answer:</label>
+              <input
+                ref={inputRef}
+                type="number"
+                value={currentInput}
+                onChange={(e) => setCurrentInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submitAnswer()}
+                placeholder="Type answer..."
+                className="answer-input"
+              />
+              <button onClick={submitAnswer} className="submit-btn">
+                Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Game Over */}
+      {gameState === GAME_STATES.GAME_OVER && (
+        <div className="menu-screen">
+          <div className="game-over-content">
+            <h1 className="game-over-title">GAME OVER!</h1>
+            <div className="final-stats">
+              <div className="stat">
+                <span className="stat-label">Final Score:</span>
+                <span className="stat-value">{score}</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Max Streak:</span>
+                <span className="stat-value">{maxStreak}</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Difficulty:</span>
+                <span className="stat-value">{DIFFICULTY_LEVELS[difficulty].name}</span>
+              </div>
+            </div>
+            <div className="menu-buttons">
+              <button className="menu-btn primary" onClick={startGame}>
+                🔄 PLAY AGAIN
+              </button>
+              <button className="menu-btn" onClick={() => setGameState(GAME_STATES.MAIN_MENU)}>
+                🏠 MAIN MENU
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* High Scores */}
+      {gameState === GAME_STATES.HIGHSCORES && (
+        <div className="menu-screen">
+          <div className="highscores-content">
+            <h1>🏆 HIGH SCORES</h1>
+            <div className="scores-list">
+              {highScores.length === 0 ? (
+                <p>No high scores yet! Play a game to set your first score.</p>
+              ) : (
+                highScores.map((score, index) => (
+                  <div key={index} className="score-item">
+                    <span className="rank">#{index + 1}</span>
+                    <span className="score">{score}</span>
+                  </div>
+                ))
+              )}
+            </div>
+            <button className="menu-btn" onClick={() => setGameState(GAME_STATES.MAIN_MENU)}>
+              ← BACK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h2>⚙️ Game Settings</h2>
+            <div className="settings-section">
+              <h3>Difficulty Level</h3>
+              <div className="difficulty-buttons">
+                {Object.entries(DIFFICULTY_LEVELS).map(([key, level]) => (
+                  <button
+                    key={key}
+                    className={`difficulty-btn ${difficulty === key ? 'active' : ''}`}
+                    onClick={() => setDifficulty(key)}
+                  >
+                    <div>{level.name}</div>
+                    <small>{level.timeLimit}s • Range: 1-{level.range}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="settings-section">
+              <h3>About Math Hero</h3>
+              <p>Version 2.0 Enhanced Edition</p>
+              <p>Transform your math skills into superpowers!</p>
+            </div>
+            <button className="menu-btn primary" onClick={() => setShowSettings(false)}>
+              ✅ SAVE & CLOSE
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
